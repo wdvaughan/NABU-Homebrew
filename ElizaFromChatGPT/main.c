@@ -51,7 +51,7 @@ void main2() {
   // greet the user
   vdp_print("Hello! I am Eliza-Nabu, a chatbot.");
   vdp_newLine();
-  vdp_print("What is on your mind today?");
+  vdp_print("What is on your mind tonight?");
 
 
   while (1) {
