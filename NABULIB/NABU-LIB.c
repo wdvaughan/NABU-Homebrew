@@ -1,16 +1,12 @@
 // ****************************************************************************************
 // NABU-LIB C Library
-// DJ Sures (c) 2023
+// DJ Sures (c) 2024
 // https://nabu.ca
+// https://github.com/DJSures/NABU-LIB
 // 
 // Read the NABU-LIB.h file for details of each function in this file.
-// 
-// *Note: Some TMS9918 graphic functions were from: https://github.com/michalin/TMS9918_Arduino/tree/main/examples
-//        Modified by DJ Sures 2022 for NABU PC
 //
 // **********************************************************************************************
-
-
 
 
 
@@ -19,214 +15,416 @@
 // ------
 // **************************************************************************
 
-inline void nop() {
-  __asm
-  NOP
-    __endasm;
-}
+void initNABULib() {
 
-inline void NABU_DisableInterrupts() {
+  // Turn off the rom
+  IO_CONTROL = CONTROL_ROMSEL | CONTROL_VDOBUF;
 
-  __asm
-  di
-    __endasm;
-}
-
-inline void NABU_EnableInterrupts() {
+  NABU_DisableInterrupts();
 
   __asm
-  ei
-    __endasm;
+
+    push af;
+    ld a, r;
+    ld (__randomSeed), a;
+    pop af;
+
+  __endasm;
+
+  srand(_randomSeed);
+
+  __asm
+
+    IM 2;
+
+    ld a, INTERUPT_VECTOR_MAP_MSB;
+    ld i, a;
+
+    #ifndef DISABLE_HCCA_RX_INT
+      // HCCA Receive
+      ld hl, _isrHCCARX;
+      ld (INTERUPT_VECTOR_MAP_ADDRESS), hl;
+    #endif 
+
+      // // HCCA Send
+      // ld hl, _isrHCCATX;
+      // ld (INTERUPT_VECTOR_MAP_ADDRESS + 2), hl;
+
+    #ifndef DISABLE_KEYBOARD_INT
+      // HCCA Keyboard
+      ld hl, _isrKeyboard;
+      ld (INTERUPT_VECTOR_MAP_ADDRESS + 4), hl;
+    #endif
+
+    // // Video Frame Sync
+    // ld hl, _isrVideoSync;
+    // ld (INTERUPT_VECTOR_MAP_ADDRESS + 6), hl;
+
+    // // Option card 0
+    // ld hl, _isrFunc;
+    // ld (INTERUPT_VECTOR_MAP_ADDRESS + 8), hl;
+
+    // // Option card 1
+    // ld hl, _isrFunc;
+    // ld (INTERUPT_VECTOR_MAP_ADDRESS + 10), hl;
+
+    // // Option card 2
+    // ld hl, _isrFunc;
+    // ld (INTERUPT_VECTOR_MAP_ADDRESS + 12), hl;
+
+    // // Option card 3
+    // ld hl, _isrFunc;
+    // ld (INTERUPT_VECTOR_MAP_ADDRESS + 14), hl;
+
+  __endasm;
+
+  uint8_t origIntMask;
+
+  #if BIN_TYPE == BIN_HOMEBREW
+
+    // A homebrew would not have existing interupts, so we start with a nice clean 0
+    origIntMask = 0;
+  #elif BIN_TYPE == BIN_CPM
+
+    // if cpm, we get the previous interrupt settings that the BIOS set because we only override 
+    // what we want to use in NABULib. 
+    origIntMask = ayRead(IOPORTA);
+  #endif
+
+  #ifndef DISABLE_HCCA_RX_INT
+    origIntMask |= INT_MASK_HCCARX;
+  #endif
+
+  #ifndef DISABLE_KEYBOARD_INT
+    origIntMask |= INT_MASK_KEYBOARD;
+  #endif
+
+  ayWrite(IOPORTA, origIntMask);
+
+  NABU_EnableInterrupts();
+
+  initNABULIBAudio();
 }
 
+void initNABULIBAudio() {
 
+  // Noise envelope
+  ayWrite(6, 0b00000000);
 
+  // Turn off all channels
+  ayWrite(8, 0b00000000);
+  ayWrite(9, 0b00000000);
+  ayWrite(10, 0b00000000);
+
+  // Enable only the Tone generators on A B C
+  ayWrite(7, 0b01111000);
+
+  ayWrite(11, 0);
+  ayWrite(12, 0);
+  ayWrite(13, 0);
+}
+
+void nop() {
+  __asm
+    NOP
+  __endasm;
+}
+
+void NABU_DisableInterrupts() {
+
+  __asm
+    di
+  __endasm;
+}
+
+void NABU_EnableInterrupts() {
+
+  __asm
+    ei
+  __endasm;
+}
+
+void RightShift(uint8_t *arr, uint16_t len, uint8_t n) {
+        
+  uint8_t *toPtr = arr + (len - 1);
+  uint8_t *fromPtr = toPtr - n;
+  uint8_t *endPtr = arr - 1;
+
+  while (fromPtr != endPtr) {
+
+    *toPtr = *fromPtr;
+    toPtr--;
+    fromPtr--;
+  }
+  
+  fromPtr = arr + (n - 1);
+  
+  while (fromPtr != endPtr) {
+
+    *fromPtr = 0x20;
+    fromPtr--;
+  }   
+}
 
 // **************************************************************************
-// RetroNET
-// ------------
+// Interrupts
+// -----
 // **************************************************************************
 
-uint8_t rn_fileOpen(uint8_t filenameLen, uint8_t* filename, uint16_t fileFlag, uint8_t fileHandle) {
+#ifndef DISABLE_HCCA_RX_INT  
+  void isrHCCARX() __naked {
+
+    // review LIS and only bc, hl, a registers are used for this function
+    __asm
+      push bc;
+      push de;
+      push hl;
+      push af;
+    __endasm;
+
+    // _rxBuffer[_rxBufferWritePos] = IO_HCCA;
+    // _rxBufferWritePos++;
+
+    __asm
+      ld	bc, __rxBuffer+0
+      ld	hl, (__rxBufferWritePos)
+      ld	h, 0x00
+      add	hl, bc
+      in	a, (_IO_HCCA)
+      ld	(hl), a
+      ld	a, (__rxBufferWritePos+0)
+      inc	a
+      ld	(__rxBufferWritePos+0), a
+    __endasm;
+
+    __asm
+      pop af;
+      pop hl;
+      pop de;
+      pop bc;
+      ei;
+      reti;
+    __endasm;
+  }
+#endif 
+
+#ifndef DISABLE_KEYBOARD_INT
+  void isrKeyboard() __naked {
+
+    __asm
+      push bc;
+      push de;
+      push hl;
+      push af;
+      push iy;
+      ld iy, 0;      
+    __endasm;
+
+    uint8_t inKey = IO_KEYBOARD;
+
+    if (inKey >= 0x80 && inKey <= 0x83) {
+
+      _lastKeyboardIntVal = inKey;
+    } else if (inKey < 0x90 || inKey > 0x95) {
+
+      switch (_lastKeyboardIntVal) {
+        case 0x80:
+          _lastKeyboardIntVal = 0;
+          _joyStatus[0] = inKey;
+          break;
+        case 0x81:
+          _lastKeyboardIntVal = 0;
+          _joyStatus[1] = inKey;
+          break;
+        case 0x82:
+          _lastKeyboardIntVal = 0;
+          _joyStatus[2] = inKey;
+          break;
+        case 0x83:
+          _lastKeyboardIntVal = 0;
+          _joyStatus[3] = inKey;
+          break;
+        default: {
+
+          _kbdBuffer[_kbdBufferWritePos] = inKey;
+
+          _kbdBufferWritePos++;
+        }
+      }
+    }
+
+    __asm      
+      pop iy;
+      pop af;
+      pop hl;
+      pop de;
+      pop bc;
+      ei;
+      reti;
+    __endasm;
+  }
+#endif
+
+#if BIN_TYPE == BIN_CPM
+
+  // **************************************************************************
+  // VT51 for CPM
+  // ------------------
+  // **************************************************************************
+
+  void vt_clearToEndOfScreen() {
 
-  //0xa3
+    printf("%cJ", 27);
+  }
 
-  hcca_writeByte(0xa3);
+  void vt_clearToEndOfLine() {
 
-  hcca_writeByte(filenameLen);
+    printf("%cK", 27);
+  }
 
-  hcca_writeBytes(0, filenameLen, filename);
+  void vt_clearScreen() {
 
-  hcca_writeUInt16(fileFlag);
+    if (_EMULATION_MODE == 0)
+      putchar(26);
+    else
+      printf("%cE", 27);
+  }
 
-  hcca_writeByte(fileHandle);
+  void vt_clearLine() {
 
-  return hcca_readFromBuffer();
-}
+    printf("%cl", 27);
+  }
 
-void rn_fileHandleClose(uint8_t fileHandle) {
+  void vt_clearToStartOfLine() {
 
-  //0xa7
+    printf("%co", 27);
+  }
 
-  hcca_writeByte(0xa7);
+  void vt_clearToStartOfScreen() {
 
-  hcca_writeByte(fileHandle);
-}
+    printf("%cd", 27);
+  }
 
-int32_t rn_fileSize(uint8_t filenameLen, uint8_t* filename) {
+  void vt_moveCursorDown(uint8_t count) {
 
-  //0xa8
+    for (uint8_t i = 0; i < count; i++)
+      if (_EMULATION_MODE == 0)
+        putchar(0x0a);
+      else
+        printf("%cB", 27);
+  }
 
-  hcca_writeByte(0xa8);
+  void vt_cursorHome() {
 
-  hcca_writeByte(filenameLen);
+    printf("%cH", 27);
+  }
 
-  hcca_writeBytes(0, filenameLen, filename);
+  void vt_moveCursorLeft(uint8_t count) {
 
-  return hcca_readInt32();
-}
+    for (uint8_t i = 0; i < count; i++)
+      if (_EMULATION_MODE == 0)
+        putchar(8);
+      else;
+        printf("%cD", 27);
+  }
 
-int32_t rn_fileHandleSize(uint8_t fileHandle) {
+  void vt_moveCursorRight(uint8_t count) {
 
-  //0xa4
+    for (uint8_t i = 0; i < count; i++)
+      if (_EMULATION_MODE == 0)
+        putchar(12);
+      else
+        printf("%cC", 27);
+  }
 
-  hcca_writeByte(0xa4);
+  void vt_moveCursorUp(uint8_t count) {
 
-  hcca_writeByte(fileHandle);
+    for (uint8_t i = 0; i < count; i++)
+      if (_EMULATION_MODE == 0)
+        putchar(11);
+      else
+        printf("%cA", 27);
+  }
 
-  return hcca_readInt32();
-}
+  void vt_deleteLine() {
 
-uint16_t rn_fileHandleRead(uint8_t fileHandle, uint8_t* buffer, uint16_t bufferOffset, uint32_t readOffset, uint16_t readLength) {
+    if (_EMULATION_MODE)
+      printf("%cR", 27);
+    else
+      printf("%cM", 27);
+  }
 
-  //0xa5
+  void vt_setCursor(uint8_t x, uint8_t y) {
 
-  hcca_writeByte(0xa5);
+    putchar(27);
+    if (_EMULATION_MODE == 0)
+      putchar('=');
+    else
+      putchar('Y');
+      
+    putchar(32 + y);
+    putchar(32 + x);
+  }
 
-  hcca_writeByte(fileHandle);
+  void vt_insertLine() {
 
-  hcca_writeUInt32(readOffset);
+    if (_EMULATION_MODE == 0)
+      printf("%cE", 27);
+    else
+      printf("%cL", 27);
+  }
 
-  hcca_writeUInt16(readLength);
+  void vt_restoreCursorPosition() {
 
-  for (uint16_t i = 0; i < readLength; i++)
-    buffer[i + bufferOffset] = hcca_readFromBuffer();
+    if (_EMULATION_MODE == 0)
+      printf("%ck", 27);
+    else
+      printf("%ck", 27);
+  }
 
-  return readLength;
-}
+  void vt_backgroundColor(uint8_t color) {
 
-void rn_fileHandleAppend(uint8_t fileHandle, uint16_t dataOffset, uint16_t dataLen, int8_t* data) {
+    putchar(27);
+    putchar('c');
+    putchar(color);
+  }
 
-  //0xa9
+  void vt_saveCursorPosition() {
 
-  hcca_writeByte(0xa9);
+    printf("%cj", 27);
+  }
 
-  hcca_writeByte(fileHandle);
+  void vt_cursorUpAndInsert() {
 
-  hcca_writeUInt16(dataLen);
+    printf("%cI", 27);
+  }
 
-  hcca_writeBytes(dataOffset, dataLen, data);
-}
+  void vt_wrapOff() {
 
-void rn_fileHandleInsert(uint8_t fileHandle, uint32_t fileOffset, uint16_t dataOffset, uint16_t dataLen, int8_t* data) {
+    printf("%cw", 27);
+  }
 
-  //0xaa
+  void vt_wrapOn() {
 
-  hcca_writeByte(0xaa);
+    printf("%cv", 27);
+  }
 
-  hcca_writeByte(fileHandle);
+  void vt_normalVideo() {
 
-  hcca_writeUInt32(fileOffset);
+    printf("%cq", 27);
+  }
 
-  hcca_writeUInt16(dataLen);
+  void vt_reverseVideo() {
 
-  hcca_writeBytes(dataOffset, dataLen, data);
-}
+    printf("%cp", 27);
+  }
 
-void rn_fileHandleDeleteRange(uint8_t fileHandle, uint32_t fileOffset, uint16_t deleteLen) {
+  bool isCloudCPM() {
 
-  // 0xab
+    return _CLOUD_CPM_KEY == 0x55;
+  }
 
-  hcca_writeByte(0xab);
-
-  hcca_writeByte(fileHandle);
-
-  hcca_writeUInt32(fileOffset);
-
-  hcca_writeUInt16(deleteLen);
-}
-
-void rn_fileHandleEmptyFile(uint8_t fileHandle) {
-
-  // 0xb0
-
-  hcca_writeByte(0xb0);
-
-  hcca_writeByte(fileHandle);
-}
-
-void rn_fileHandleReplace(uint8_t fileHandle, uint32_t fileOffset, uint16_t dataOffset, uint16_t dataLen, int8_t* data) {
-
-  // 0xac
-
-  hcca_writeByte(0xac);
-
-  hcca_writeByte(fileHandle);
-
-  hcca_writeUInt32(fileOffset);
-
-  hcca_writeUInt16(dataLen);
-
-  hcca_writeBytes(dataOffset, dataLen, data);
-}
-
-void rn_fileDelete(uint8_t filenameLen, uint8_t* filename) {
-
-  // 0xad
-
-  hcca_writeByte(0xad);
-
-  hcca_writeByte(filenameLen);
-
-  hcca_writeBytes(0, filenameLen, filename);
-}
-
-void rn_fileHandleCopy(uint8_t srcFilenameLen, uint8_t* srcFilename, uint8_t destFilenameLen, uint8_t* destFilename, uint8_t copyMoveFlag) {
-
-  // 0xae
-
-  hcca_writeByte(0xae);
-
-  hcca_writeByte(srcFilenameLen);
-
-  hcca_writeBytes(0, srcFilenameLen, srcFilename);
-
-  hcca_writeByte(destFilenameLen);
-
-  hcca_writeBytes(0, destFilenameLen, destFilename);
-
-  hcca_writeByte(copyMoveFlag);
-}
-
-void rn_fileHandleMove(uint8_t srcFilenameLen, uint8_t* srcFilename, uint8_t destFilenameLen, uint8_t* destFilename, uint8_t copyMoveFlag) {
-
-  // 0xaf
-
-  hcca_writeByte(0xaf);
-
-  hcca_writeByte(srcFilenameLen);
-
-  hcca_writeBytes(0, srcFilenameLen, srcFilename);
-
-  hcca_writeByte(destFilenameLen);
-
-  hcca_writeBytes(0, destFilenameLen, destFilename);
-
-  hcca_writeByte(copyMoveFlag);
-}
-
-
-
+#endif
 
 
 
@@ -236,32 +434,18 @@ void rn_fileHandleMove(uint8_t srcFilenameLen, uint8_t* srcFilename, uint8_t des
 // -----
 // **************************************************************************
 
-inline void ayWrite(uint8_t reg, uint8_t val) {
+void ayWrite(uint8_t reg, uint8_t val) {
 
   IO_AYLATCH = reg;
 
   IO_AYDATA = val;
 }
 
-inline uint8_t ayRead(uint8_t reg) {
+uint8_t ayRead(uint8_t reg) {
 
   IO_AYLATCH = reg;
 
   return IO_AYDATA;
-}
-
-void initAudio() {
-
-  // Noise envelope
-  ayWrite(6, 0b00000000);
-
-  // Set the amplitude (volume) to enveoloe
-  ayWrite(8, 0b00010000);
-  ayWrite(9, 0b00010000);
-  ayWrite(10, 0b00010000);
-
-  // Enable only the Tone generators on A B C
-  ayWrite(7, 0b01111000);
 }
 
 void playNoteDelay(uint8_t channel, uint8_t note, uint16_t delayLength) {
@@ -270,24 +454,40 @@ void playNoteDelay(uint8_t channel, uint8_t note, uint16_t delayLength) {
   ayWrite(11, delayLength >> 8);
   ayWrite(12, delayLength & 0xff);
 
-  if (channel == 0) {
+  switch (channel) {
+    case 0:
 
-    ayWrite(0x00, _NOTES_FINE[note]);
-    ayWrite(0x01, _NOTES_COURSE[note]);
+      ayWrite(8, 0b00010000);
+      ayWrite(9, 0b00000000);
+      ayWrite(10, 0b00000000);
 
-    ayWrite(13, 0b00000000);
-  } else if (channel == 1) {
+      ayWrite(0x00, _NOTES_FINE[note]);
+      ayWrite(0x01, _NOTES_COURSE[note]);
 
-    ayWrite(0x02, _NOTES_FINE[note]);
-    ayWrite(0x03, _NOTES_COURSE[note]);
+      ayWrite(13, 0b00000000);
+      break;
+    case 1:
 
-    ayWrite(13, 0b00000000);
-  } else {
+      ayWrite(8, 0b00000000);
+      ayWrite(9, 0b00010000);
+      ayWrite(10, 0b00000000);
 
-    ayWrite(0x04, _NOTES_FINE[note]);
-    ayWrite(0x05, _NOTES_COURSE[note]);
+      ayWrite(0x02, _NOTES_FINE[note]);
+      ayWrite(0x03, _NOTES_COURSE[note]);
 
-    ayWrite(13, 0b00000000);
+      ayWrite(13, 0b00000000);
+      break;
+    case 2:
+
+      ayWrite(8, 0b00000000);
+      ayWrite(9, 0b00000000);
+      ayWrite(10, 0b00010000);
+
+      ayWrite(0x04, _NOTES_FINE[note]);
+      ayWrite(0x05, _NOTES_COURSE[note]);
+
+      ayWrite(13, 0b00000000);
+      break;
   }
 }
 
@@ -300,335 +500,267 @@ void playNoteDelay(uint8_t channel, uint8_t note, uint16_t delayLength) {
 // --------
 // **************************************************************************
 
-uint8_t isKeyPressed() {
+#ifndef DISABLE_KEYBOARD_INT
 
-  if (IO_KEYBOARD_STATUS & 0x02) {
+  uint8_t isKeyPressed() {
 
-    uint8_t inKey = IO_KEYBOARD;
-
-    if (inKey >= 0x90 && inKey <= 0x95)
-      return 0x00;
-
-    LastKeyPressed = inKey;
-
-    return inKey;
+    return (_kbdBufferWritePos != _kbdBufferReadPos);
   }
 
-  return false;
-}
+  uint8_t getChar() {
 
-uint8_t getChar() {
+    #if defined(DISABLE_CURSOR) || defined(DISABLE_VDP)
 
-  uint8_t retVal = 0;
+      while (_kbdBufferWritePos == _kbdBufferReadPos);   
 
-  while (retVal == 0)
-    retVal = isKeyPressed();
+    #else
 
-  return retVal;
-}
+      uint16_t cursorCnt = 0;
 
-uint8_t readLine(uint8_t* buffer, uint8_t maxInputLen) {
+      while (_kbdBufferWritePos == _kbdBufferReadPos)
+        if (CURSOR_CHAR != 0) {
 
-  uint8_t i = 0;
+          if (cursorCnt == 1)
+            vdp_writeCharAtLocation(vdp_cursor.x, vdp_cursor.y, CURSOR_CHAR);
+          else if (cursorCnt == 15000)
+            vdp_writeCharAtLocation(vdp_cursor.x, vdp_cursor.y, ' ');
+          else if (cursorCnt > 30000)     
+            cursorCnt = 0;
+          
+          cursorCnt++;
+        }
+      
+      if (CURSOR_CHAR != 0)
+        vdp_writeCharAtLocation(vdp_cursor.x, vdp_cursor.y, ' ');
 
-  while (true) {
+    #endif
 
-    uint8_t c = getChar();
+    uint8_t key = _kbdBuffer[_kbdBufferReadPos];
 
-    if (c == 13) {
+    _kbdBufferReadPos++;
 
-      break;
-    } else if (i < maxInputLen && c >= 0x20 && c <= 126) {
+    return key;
+  }
 
-      buffer[i] = c;
+  uint8_t getJoyStatus(uint8_t joyNum) {
 
-      vdp_write(c, true);
+      return _joyStatus[joyNum];
+  }
 
-      i++;
-    } else if (c == 127 && i > 0) {
+  #ifndef DISABLE_VDP
 
-      if (vdp_cursor.x == 0) {
+    uint8_t readLine(uint8_t *buffer, uint8_t maxInputLen) {
 
-        vdp_cursor.x = 39;
-        vdp_cursor.y--;
-      } else {
+      uint8_t i = 0;
 
-        vdp_cursor.x--;
+      while (true) {
+
+        uint8_t c = getChar();
+
+        if (c == 13) {
+
+          break;
+        } else if (i < maxInputLen && c >= 0x20 && c <= 126) {
+
+          buffer[i] = c;
+
+          vdp_write(c);
+
+          i++;
+        } else if (i == maxInputLen && c != 127) {
+
+          playNoteDelay(0, 60, 10);
+        } else if (c == 127 && i > 0) {
+
+          if (vdp_cursor.x == 0) {
+
+            vdp_cursor.x = 39;
+            vdp_cursor.y--;
+          } else {
+
+            vdp_cursor.x--;
+          }
+
+          i--;
+
+          vdp_writeCharAtLocation(vdp_cursor.x, vdp_cursor.y, ' ');
+        }
       }
 
-      i--;
-
-      vdp_writeCharAtLocation(vdp_cursor.x, vdp_cursor.y, ' ');
+      return i;
     }
+  #endif
+
+#endif
+
+
+#ifndef DISABLE_HCCA_RX_INT
+
+  // **************************************************************************
+  // HCCA Receive
+  // ------------
+  // **************************************************************************
+
+  bool hcca_ping() {
+
+    hcca_writeByte(0xa1);
+
+    uint32_t timer = 0;
+
+    while (_rxBufferWritePos == _rxBufferReadPos) {
+      
+      timer++;
+
+      if (timer == 50000)
+        return false;
+    }
+
+    uint8_t resp = hcca_readByte();
+
+    if (resp == 0x55)
+      return true;
+
+    return false;
   }
 
-  return i;
-}
+  bool hcca_isRxBufferAvailable() {
 
+    return _rxBufferWritePos != _rxBufferReadPos;
+  }
 
+  uint8_t hcca_getSizeOfDataInBuffer() {
 
+    if (_rxBufferReadPos > _rxBufferWritePos)
+      return (0xff - _rxBufferReadPos) + _rxBufferWritePos;
 
+    return _rxBufferWritePos - _rxBufferReadPos;
+  }
 
-// **************************************************************************
-// HCCA Receive
-// ------------
-// **************************************************************************
+  uint8_t hcca_readByte() {
 
-//IM2_DEFINE_ISR(isr) {
-void isr() {
+    while (_rxBufferWritePos == _rxBufferReadPos);
 
-  __asm
-  push af;
-  push bc;
-  push de;
-  push hl;
-  __endasm;
+    uint8_t ret = _rxBuffer[_rxBufferReadPos];
 
-  _rxBuffer[_rxBufferWritePos] = IO_HCCA;
+    _rxBufferReadPos++;
 
-  _rxBufferWritePos++;
+    return ret;
+  }
 
-  if (_rxBufferWritePos == RX_BUFFER_SIZE)
-    _rxBufferWritePos = 0;
+  uint16_t hcca_readUInt16() {
 
-  __asm
-  pop hl;
-  pop de;
-  pop bc;
-  pop af;
-  ei;
-  reti;
-  __endasm;
-}
+    return (uint16_t)hcca_readByte() +
+           ((uint16_t)hcca_readByte() << 8);
+  }
 
-void hcca_enableReceiveBufferInterrupt() {
+  int16_t hcca_readInt16() {
 
-  NABU_DisableInterrupts();
+    return (int16_t)hcca_readByte() +
+           ((int16_t)hcca_readByte() << 8);
+  }
 
-  ayWrite(IOPORTA, 0b10000000);          // Enable the interrupts that we want to raise (HCCA RX) 
+  uint32_t hcca_readUInt32() {
 
-  im2_init((void*)0xe300);               // init the IM2 to point to the start of the table at 0xe300
-  memset((void*)0xe300, 0xe4, 257);      // init the table at 0xe300 to point to 0xe4e4 (table contains 127 16-bit addresses)
-  z80_bpoke(0xe4e4, 195);                // at 0xe4e4, put a JP
-  z80_wpoke(0xe4e5, (unsigned int)isr);  // at 0xe4e5, put the address to JP to, which is our ISR function
+    uint8_t ret[4] = { hcca_readByte(), hcca_readByte(), hcca_readByte(), hcca_readByte() };
 
-  NABU_EnableInterrupts();
-}
+    return *((uint32_t *)ret);
+  }
 
-inline bool hcca_isRxBufferAvailable() {
+  int32_t hcca_readInt32() {
 
-  return _rxBufferWritePos != _rxBufferReadPos;
-}
+    uint8_t ret[4] = { hcca_readByte(), hcca_readByte(), hcca_readByte(), hcca_readByte() };
 
-uint8_t hcca_getSizeOfDataInBuffer() {
+    return *((int32_t *)ret);
+  }
 
-  if (_rxBufferReadPos > _rxBufferWritePos)
-    return (RX_BUFFER_SIZE - _rxBufferReadPos) + _rxBufferWritePos;
+  void hcca_readBytes(uint16_t offset, uint16_t bufferLen, uint8_t *buffer) {
 
-  return _rxBufferWritePos - _rxBufferReadPos;
-}
+    uint8_t *start = buffer + offset;
+    uint8_t *end   = start + bufferLen;
 
-uint8_t hcca_readFromBuffer() {
+    do {
 
-  while (!hcca_isRxBufferAvailable());
+      while (_rxBufferWritePos == _rxBufferReadPos);
 
-  uint8_t ret = _rxBuffer[_rxBufferReadPos];
+      *start = _rxBuffer[_rxBufferReadPos];
 
-  _rxBufferReadPos++;
+      start++;
 
-  if (_rxBufferReadPos == RX_BUFFER_SIZE)
-    _rxBufferReadPos = 0;
+      _rxBufferReadPos++;
+    } while (start != end);
+  }
 
-  return ret;
-}
 
-inline void hcca_receiveModeStart() {
+  // **************************************************************************
+  // HCCA Transmit
+  // -------------
+  // **************************************************************************
 
-  ayWrite(IOPORTA, 0b10000000);
-}
+  void hcca_writeByte(uint8_t c) {
 
-inline bool hcca_isDataAvailable() {
+    NABU_DisableInterrupts();
+    
+    uint8_t origIntMask = ayRead(IOPORTA);
 
-  return !(ayRead(IOPORTB) & 0b00000010);
-}
+    ayWrite(IOPORTA, INT_MASK_HCCATX);
 
-inline uint8_t hcca_readByte() {
+    IO_AYLATCH = IOPORTB;
+    while (IO_AYDATA & 0x04);
 
-  return IO_HCCA;
-}
+    IO_HCCA = c;
 
-inline uint16_t hcca_readUInt16() {
+    ayWrite(IOPORTA, origIntMask);
 
-  return (uint16_t)hcca_readFromBuffer() +
-    ((uint16_t)hcca_readFromBuffer() << 8);
-}
+    NABU_EnableInterrupts();
+  }
 
-inline int16_t hcca_readInt16() {
-
-  return (int16_t)hcca_readFromBuffer() +
-    ((int16_t)hcca_readFromBuffer() << 8);
-}
-
-inline uint32_t hcca_readUInt32() {
-
-  return (uint32_t)hcca_readFromBuffer() +
-    ((uint32_t)hcca_readFromBuffer() << 8) +
-    ((uint32_t)hcca_readFromBuffer() << 16) +
-    ((uint32_t)hcca_readFromBuffer() << 24);
-}
-
-inline int32_t hcca_readInt32() {
-
-  return (int32_t)hcca_readFromBuffer() +
-    ((int32_t)hcca_readFromBuffer() << 8) +
-    ((int32_t)hcca_readFromBuffer() << 16) +
-    ((int32_t)hcca_readFromBuffer() << 24);
-}
-
-
-
-
-// **************************************************************************
-// HCCA Transmit
-// -------------
-// **************************************************************************
-
-inline void hcca_writeByte(uint8_t c) {
-
-  //NABU_DisableInterrupts();
-
-  //// Transmit start
-  //ayWrite(IOPORTA, 0b01000000);
-
-  IO_HCCA = c;
-
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-  nop();
-
-  //IO_AYLATCH = IOPORTB;
-  //while ((IO_AYDATA & 0b00000100) == 0x04);
-
-  //// Enable RX interrupt
-  //ayWrite(IOPORTA, 0b10000000);
-
-  //NABU_EnableInterrupts();
-}
-
-void hcca_writeUInt32(uint32_t val) {
-
-  hcca_writeByte(val & 0xff);
-  hcca_writeByte((val >> 8) & 0xff);
-  hcca_writeByte((val >> 16) & 0xff);
-  hcca_writeByte((val >> 24) & 0xff);
-}
-
-void hcca_writeInt32(int32_t val) {
-
-  hcca_writeByte(val & 0xff);
-  hcca_writeByte((val >> 8) & 0xff);
-  hcca_writeByte((val >> 16) & 0xff);
-  hcca_writeByte((val >> 24) & 0xff);
-}
-
-void hcca_writeUInt16(uint16_t val) {
-
-  hcca_writeByte(val & 0xff);
-  hcca_writeByte((val >> 8) & 0xff);
-}
-
-void hcca_writeInt16(int16_t val) {
-
-  hcca_writeByte(val & 0xff);
-  hcca_writeByte((val >> 8) & 0xff);
-}
-
-void hcca_writeString(uint8_t* str) {
-
-  for (unsigned int i = 0; str[i] != 0x00; i++)
-    hcca_writeByte(str[i]);
-}
-
-void hcca_writeBytes(uint16_t offset, uint16_t length, uint8_t* bytes) {
-
-  for (uint16_t i = 0; i < length; i++)
-    hcca_writeByte(bytes[offset + i]);
-}
+  void hcca_writeUInt32(uint32_t val) {
 
+    hcca_writeByte((uint8_t)(val & 0xff));
+    hcca_writeByte((uint8_t)((val >> 8) & 0xff));
+    hcca_writeByte((uint8_t)((val >> 16) & 0xff));
+    hcca_writeByte((uint8_t)((val >> 24) & 0xff));
+  }
 
+  void hcca_writeInt32(int32_t val) {
 
+    hcca_writeByte((uint8_t)(val & 0xff));
+    hcca_writeByte((uint8_t)((val >> 8) & 0xff));
+    hcca_writeByte((uint8_t)((val >> 16) & 0xff));
+    hcca_writeByte((uint8_t)((val >> 24) & 0xff));
+  }
+
+  void hcca_writeUInt16(uint16_t val) {
+
+    hcca_writeByte((uint8_t)(val & 0xff));
+    hcca_writeByte((uint8_t)((val >> 8) & 0xff));
+  }
+
+  void hcca_writeInt16(int16_t val) {
+
+    hcca_writeByte((uint8_t)(val & 0xff));
+    hcca_writeByte((uint8_t)((val >> 8) & 0xff));
+  }
+
+  void hcca_writeString(uint8_t *str) {
+    
+    for (unsigned int i = 0; str[i] != 0x00; i++)
+      hcca_writeByte(str[i]);
+  }
+
+  void hcca_writeBytes(uint16_t offset, uint16_t length, uint8_t *bytes) {
+
+    uint8_t *start = bytes + offset;
+    uint8_t *end   = start + length;
+
+    while (start != end) {
+
+      hcca_writeByte(*start);
+
+      start++;
+    }
+  }
+#endif
 
 
 // **************************************************************************
@@ -636,649 +768,1086 @@ void hcca_writeBytes(uint16_t offset, uint16_t length, uint8_t* bytes) {
 // ---
 // **************************************************************************
 
-inline void vdp_setRegister(unsigned char registerIndex, unsigned char value) {
+#ifndef DISABLE_VDP
 
-  IO_VDPLATCH = value;
+  void vdp_setRegister(uint8_t registerIndex, uint8_t value) {
 
-  IO_VDPLATCH = 0x80 | registerIndex;
-}
+    IO_VDPLATCH = value;
 
-inline void vdp_setWriteAddress(unsigned int address) {
-
-  IO_VDPLATCH = address & 0xff;
-
-  IO_VDPLATCH = 0x40 | (address >> 8) & 0x3f;
-}
-
-inline void vdp_setReadAddress(unsigned int address) {
-
-  IO_VDPLATCH = address & 0xff;
-
-  IO_VDPLATCH = (address >> 8) & 0x3f;
-}
-
-int vdp_init(uint8_t mode, uint8_t color, bool big_sprites, bool magnify, bool autoScroll) {
-
-  _vdp_mode = mode;
-
-  _vdp_sprite_size_sel = big_sprites;
-
-  _autoScroll = autoScroll;
-
-  // Clear Ram
-  vdp_setWriteAddress(0x0);
-
-  for (int i = 0; i < 0x3FFF; i++)
-    IO_VDPDATA = 0;
-
-  switch (mode) {
-  case VDP_MODE_G1:
-
-    vdp_setRegister(0, 0x00);
-    vdp_setRegister(1, 0xC0 | (big_sprites << 1) | magnify); // Ram size 16k, activate video output
-    vdp_setRegister(2, 0x05); // Name table at 0x1400
-    vdp_setRegister(3, 0x80); // Color, start at 0x2000
-    vdp_setRegister(4, 0x01); // Pattern generator start at 0x800
-    vdp_setRegister(5, 0x20); // Sprite attriutes start at 0x1000
-    vdp_setRegister(6, 0x00); // Sprite pattern table at 0x000
-    _vdp_sprite_pattern_table = 0;
-    _vdp_pattern_table = 0x800;
-    _vdp_sprite_attribute_table = 0x1000;
-    _vdp_name_table = 0x1400;
-    _vdp_color_table = 0x2000;
-    _vdp_color_table_size = 32;
-
-    // Initialize pattern table with ASCII patterns
-    vdp_setWriteAddress(_vdp_pattern_table + 0x100);
-
-    for (uint16_t i = 0; i < 768; i++)
-      IO_VDPDATA = ASCII[i];
-
-    break;
-
-  case VDP_MODE_G2:
-
-    vdp_setRegister(0, 0x02);
-    vdp_setRegister(1, 0xC0 | (big_sprites << 1) | magnify); // Ram size 16k, Disable Int, 16x16 Sprites, mag off, activate video output
-    vdp_setRegister(2, 0x0E); // Name table at 0x3800
-    vdp_setRegister(3, 0xFF); // Color, start at 0x2000
-    vdp_setRegister(4, 0x03); // Pattern generator start at 0x0
-    vdp_setRegister(5, 0x76); // Sprite attriutes start at 0x3800
-    vdp_setRegister(6, 0x03); // Sprite pattern table at 0x1800
-    _vdp_pattern_table = 0x00;
-    _vdp_sprite_pattern_table = 0x1800;
-    _vdp_color_table = 0x2000;
-    _vdp_name_table = 0x3800;
-    _vdp_sprite_attribute_table = 0x3B00;
-    _vdp_color_table_size = 0x1800;
-
-    // Initialize pattern table with ASCII patterns
-    vdp_setWriteAddress(_vdp_name_table);
-
-    for (uint16_t i = 0; i < 768; i++)
-      IO_VDPDATA = i;
-
-    break;
-
-  case VDP_MODE_TEXT:
-
-    vdp_setRegister(0, 0x00);
-    vdp_setRegister(1, 0xD2); // Ram size 16k, Disable Int
-    vdp_setRegister(2, 0x02); // Name table at 0x800
-    vdp_setRegister(4, 0x00); // Pattern table start at 0x0
-    _vdp_pattern_table = 0x00;
-    _vdp_name_table = 0x800;
-    _vdp_crsr_max_x = 39;
-
-    // Initialize pattern table with ASCII patterns
-    vdp_setWriteAddress(_vdp_pattern_table + 0x100);
-
-    for (uint16_t i = 0; i < 24 * 40; i++)
-      _vdp_textBuffer[i] = 0x20;
-
-    for (uint16_t i = 0; i < 768; i++)
-      IO_VDPDATA = ASCII[i];
-
-    vdp_setCursor2(0, 0);
-
-    break;
-
-  case VDP_MODE_MULTICOLOR:
-
-    vdp_setRegister(0, 0x00);
-    vdp_setRegister(1, 0xC8 | (big_sprites << 1) | magnify); // Ram size 16k, Multicolor
-    vdp_setRegister(2, 0x05); // Name table at 0x1400
-    // setRegister(3, 0xFF); // Color table not available
-    vdp_setRegister(4, 0x01); // Pattern table start at 0x800
-    vdp_setRegister(5, 0x76); // Sprite Attribute table at 0x1000
-    vdp_setRegister(6, 0x03); // Sprites Pattern Table at 0x0
-    _vdp_pattern_table = 0x800;
-    _vdp_name_table = 0x1400;
-
-    // Initialize pattern table with ASCII patterns
-    vdp_setWriteAddress(_vdp_name_table);
-
-    for (uint8_t j = 0; j < 24; j++)
-      for (uint16_t i = 0; i < 32; i++)
-        IO_VDPDATA = i + 32 * (j / 4);
-
-    break;
-  default:
-    return VDP_ERROR; // Unsupported mode
+    IO_VDPLATCH = 0x80 | registerIndex;
   }
 
-  vdp_setRegister(7, color);
+  void vdp_setWriteAddress(uint16_t address) {
 
-  return VDP_OK;
-}
+    IO_VDPLATCH = address;
 
-void vdp_dumpFontToScreen() {
-
-  for (uint8_t j = 0; j < 24; j++)
-    for (uint16_t i = 0; i < 32; i++)
-      IO_VDPDATA = i + 32 * (j / 4);
-}
-
-void vdp_colorize(uint8_t fg, uint8_t bg) {
-
-  if (_vdp_mode != VDP_MODE_G2)
-    return;
-
-  uint16_t name_offset = vdp_cursor.y * (_vdp_crsr_max_x + 1) + vdp_cursor.x; // Position in name table
-  uint16_t color_offset = name_offset << 3;                       // Offset of pattern in pattern table
-  vdp_setWriteAddress(_vdp_color_table + color_offset);
-
-  for (uint8_t i = 0; i < 8; i++)
-    IO_VDPDATA = (fg << 4) + bg;
-}
-
-void vdp_plotHires(uint8_t x, uint8_t y, uint8_t color1, uint8_t color2) {
-
-  uint16_t offset = 8 * (x / 8) + y % 8 + 256 * (y / 8);
-
-  vdp_setReadAddress(_vdp_pattern_table + offset);
-  uint8_t pixel = IO_VDPDATA;
-
-  vdp_setReadAddress(_vdp_color_table + offset);
-  uint8_t color = IO_VDPDATA;
-
-  if (color1 != NULL) {
-
-    pixel |= 0x80 >> (x % 8); //Set a "1"
-    color = (color & 0x0F) | (color1 << 4);
-  } else {
-
-    pixel &= ~(0x80 >> (x % 8)); //Set bit as "0"
-    color = (color & 0xF0) | (color2 & 0x0F);
+    IO_VDPLATCH = (address >> 8) | 0x40;
   }
 
-  vdp_setWriteAddress(_vdp_pattern_table + offset);
-  IO_VDPDATA = pixel;
+  void vdp_setReadAddress(uint16_t address) {
 
-  vdp_setWriteAddress(_vdp_color_table + offset);
-  IO_VDPDATA = color;
-}
+    IO_VDPLATCH = address;
 
-void vdp_plotColor(uint8_t x, uint8_t y, uint8_t color) {
+    IO_VDPLATCH = (address >> 8);
+  }
 
-  if (_vdp_mode == VDP_MODE_MULTICOLOR) {
+  void waitVdpISR() __naked {
 
-    uint16_t addr = _vdp_pattern_table + 8 * (x / 2) + y % 8 + 256 * (y / 8);
+    __asm
 
-    vdp_setReadAddress(addr);
-    uint8_t dot = IO_VDPDATA;
+      push af;      
 
-    vdp_setWriteAddress(addr);
+    // _vdpStatus = IO_VDPLATCH;
+      in	a, (_IO_VDPLATCH)
+      ld	(_vdpStatusRegVal), a
 
-    if (x & 1) // Odd columns
-      IO_VDPDATA = (dot & 0xF0) + (color & 0x0f);
+    // _vdpReady = true;
+      ld  a, 0x01
+      ld  (_vdpIsReady), a
+
+      pop af;      
+
+      ei;
+      reti;
+
+    __endasm;
+  }
+
+  void vdp_enableVDPReadyInt() {
+
+    NABU_DisableInterrupts();
+
+    __asm
+
+      // Video Frame Sync
+      ld hl, _waitVdpISR;
+      ld (INTERUPT_VECTOR_MAP_ADDRESS + 6), hl;
+
+    __endasm;
+
+    uint8_t origIntMask = ayRead(IOPORTA);
+    
+    origIntMask |= INT_MASK_VDP;
+
+    ayWrite(IOPORTA, origIntMask);
+
+    NABU_EnableInterrupts();
+
+    _vdpInterruptEnabled = true;
+    vdp_setRegister(1, _vdpReg1Val | 0b00100000 );   
+  }
+
+  void vdp_waitVDPReadyInt() {
+
+    // uncomment this to enable debugging for the VDP to see if the vdpIsReady flag was
+    // set prior to your program calling vdp_waitVDPReadyInt(). That means your program took
+    // too long and missed the vertical screen refresh.
+    // If you're using a frame buffer, it's okay if the program is taking too long because
+    // you could use this function to wait for the vdp to be ready before updating the
+    // frame buffer.
+
+    #ifdef DEBUG_VDP_INT
+
+      if (vdpIsReady)
+        IO_CONTROL = CONTROL_ROMSEL | CONTROL_VDOBUF | CONTROL_LED_ALERT;
+      else
+        IO_CONTROL = CONTROL_ROMSEL | CONTROL_VDOBUF;
+
+    #endif
+
+    vdpIsReady = false;
+
+    while (!vdpIsReady);
+  }
+
+  void vdp_disableVDPReadyInt() {
+
+    vdp_setRegister(1, _vdpReg1Val);
+
+    NABU_DisableInterrupts();
+
+    _vdpInterruptEnabled = false;
+
+    // clear any existing interrupts status
+    uint8_t tmp = IO_AYLATCH;
+
+    uint8_t origIntMask = ayRead(IOPORTA);
+
+    if (origIntMask & INT_MASK_VDP)
+      origIntMask ^= INT_MASK_VDP;
+
+    ayWrite(IOPORTA, origIntMask);
+
+    NABU_EnableInterrupts();
+  }
+
+  void vdp_addISR(void (*isr)()) {
+
+    NABU_DisableInterrupts();
+
+    _vdp_ISR = isr;
+
+    __asm
+
+      // Video Frame Sync
+      ld hl, (__vdp_ISR);
+      ld (INTERUPT_VECTOR_MAP_ADDRESS + 6), hl;
+
+    __endasm;
+
+    uint8_t origIntMask = ayRead(IOPORTA);
+
+    origIntMask |= INT_MASK_VDP;
+
+    ayWrite(IOPORTA, origIntMask);
+
+    NABU_EnableInterrupts();
+
+    _vdpInterruptEnabled = true;        
+    vdp_setRegister(1, _vdpReg1Val | 0b00100000 );   
+  }
+  
+  void vdp_removeISR() {
+
+    vdp_setRegister(1, _vdpReg1Val);
+
+    NABU_DisableInterrupts();
+
+    _vdpInterruptEnabled = false;
+
+    // clear any existing interrupts status
+    uint8_t tmp = IO_AYLATCH;
+
+    uint8_t origIntMask = ayRead(IOPORTA);
+
+    if (origIntMask & INT_MASK_VDP)
+      origIntMask ^= INT_MASK_VDP;
+
+    ayWrite(IOPORTA, origIntMask);
+
+    NABU_EnableInterrupts();
+  }
+
+  void vdp_init(uint8_t mode, uint8_t fgColor, uint8_t bgColor, bool big_sprites, bool magnify, bool autoScroll, bool splitThirds) {
+
+    _vdpMode = mode;
+
+    _vdpSplitThirds = splitThirds;
+
+    _vdpSpriteSizeSelected = big_sprites;
+
+    _autoScroll = autoScroll;
+
+    _vdpInterruptEnabled = false;
+
+    vdp_cursor.x = 0;
+    vdp_cursor.y = 0;
+    
+    switch (mode) {
+
+      case VDP_MODE_G2:
+
+        vdp_setRegister(0, 0b00000010); 
+
+        _vdpReg1Val = 0b11000000 | (big_sprites << 1) | magnify; 
+        vdp_setRegister(1, _vdpReg1Val); 
+
+        vdp_setRegister(2, 0x06);
+        _vdpPatternNameTableAddr = 0x1800;     
+
+        if (_vdpSplitThirds)
+          vdp_setRegister(4, 0x03);
+        else
+          vdp_setRegister(4, 0x00);
+        
+        _vdpPatternGeneratorTableAddr = 0x00;
+
+        fgColor = 0;
+        _vdpCursorMaxX = 31;
+        _vdpCursorMaxXFull = 32;
+        _vdpTextBufferSize = 768;
+
+        break;
+
+      case VDP_MODE_TEXT40:
+
+        vdp_setRegister(0, 0b00000000); 
+
+        _vdpReg1Val = 0b11010010;
+        vdp_setRegister(1, _vdpReg1Val);
+
+        vdp_setRegister(2, 0x06);
+        _vdpPatternNameTableAddr = 0x1800;     
+
+        vdp_setRegister(4, 0x00);
+        _vdpPatternGeneratorTableAddr = 0x00;
+
+        _vdpCursorMaxX = 39;
+        _vdpCursorMaxXFull = 40;
+        _vdpTextBufferSize = 960;
+
+        break;
+      case VDP_MODE_TEXT80:
+
+        vdp_setRegister(0, 0x04);
+
+        _vdpReg1Val = 0xD2;
+        vdp_setRegister(1, _vdpReg1Val); 
+
+        vdp_setRegister(2, 0b00000111); // pattern name table address (0x1000)
+        _vdpPatternNameTableAddr = 0x1000;     
+
+        vdp_setRegister(4, 0x00);       // pattern geneerator address (0x0000)
+
+        _vdpCursorMaxX = 79;
+        _vdpCursorMaxXFull = 80;
+        _vdpTextBufferSize = 1920;
+
+        break;
+      case VDP_MODE_MULTICOLOR:
+
+        vdp_setRegister(0, 0b00000000); 
+
+        _vdpReg1Val = 0b11001000 | (big_sprites << 1) | magnify;
+        vdp_setRegister(1, _vdpReg1Val); 
+
+        vdp_setRegister(2, 0x06);
+        _vdpPatternNameTableAddr = 0x1800;     
+
+        vdp_setRegister(4, 0x00);
+        _vdpPatternGeneratorTableAddr = 0x00;
+
+        fgColor = 0;
+        _vdpCursorMaxX = 31;
+        _vdpCursorMaxXFull = 32;
+
+        _vdpTextBufferSize = 768;
+
+        break;
+    }
+
+    if (_vdpSplitThirds)
+      vdp_setRegister(3, 0xff);
     else
-      IO_VDPDATA = (dot & 0x0F) + (color << 4);
-  } else if (_vdp_mode == VDP_MODE_G2) {
+      vdp_setRegister(3, 0x9f);
+    _vdpColorTableAddr = 0x2000;
 
-    // Draw bitmap
-    uint16_t offset = 8 * (x / 2) + y % 8 + 256 * (y / 8);
+    vdp_setRegister(5, 0x36);
+    _vdpSpriteAttributeTableAddr = 0x1b00;
 
-    vdp_setReadAddress(_vdp_color_table + offset);
-    uint8_t color_ = IO_VDPDATA;
+    vdp_setRegister(6, 0x07);
+    _vdpSpriteGeneratorTableAddr = 0x3800;
 
-    if ((x & 1) == 0) {
-      // Even 
+    vdp_setRegister(7, (fgColor << 4) | (bgColor & 0x0f));
 
-      color_ &= 0x0F;
-      color_ |= (color << 4);
+    vdp_clearScreen();
+  }
+
+  void vdp_clearVRAM() {
+
+    vdp_setWriteAddress(0x00);
+
+    for (uint16_t i = 0; i < 0x3FFF; i++)
+      IO_VDPDATA = 0;  
+  }
+
+  void vdp_initMSXMode(uint8_t bgColor) {
+
+    // https://konamiman.github.io/MSX2-Technical-Handbook/md/Appendix5.html#screen-1--graphic-1
+
+    vdp_setRegister(0, 0b00000010); 
+    vdp_setRegister(1, 0b11000000); 
+    vdp_setRegister(2, 0x06);
+    vdp_setRegister(3, 0xff); // <- ALL LIES! how is 0xff 0x2000? 
+    vdp_setRegister(4, 0x03);
+    vdp_setRegister(5, 0x36); 
+    vdp_setRegister(6, 0x07);
+
+    vdp_setRegister(7, bgColor & 0x0f);
+  }
+
+  void vdp_initTextMode80(uint8_t fgColor, uint8_t bgColor, bool autoScroll) {
+
+    vdp_init(VDP_MODE_TEXT80, fgColor, bgColor , false, false, autoScroll, false);
+  }
+
+  void vdp_initTextMode(uint8_t fgColor, uint8_t bgColor, bool autoScroll) {
+
+    vdp_init(VDP_MODE_TEXT40, fgColor, bgColor , false, false, autoScroll, false);
+  }
+
+  void vdp_initG2Mode(uint8_t bgColor, bool bigSprites, bool scaleSprites, bool autoScroll, bool splitThirds) {
+
+    vdp_init(VDP_MODE_G2, 0, bgColor, bigSprites, scaleSprites, autoScroll, splitThirds);
+  }
+
+  void vdp_initMultiColorMode() {
+
+    vdp_init(VDP_MODE_MULTICOLOR, 0, 0, false, false, false, false);
+  }
+
+  void vdp_clearScreen() {
+      
+    vdp_setWriteAddress(_vdpPatternNameTableAddr);
+
+    uint8_t *start = _vdp_textBuffer;
+    uint8_t *end = start + (_vdpCursorMaxXFull * 24);
+
+    uint8_t cr = 0x00;
+
+    if (_vdpMode == VDP_MODE_TEXT40 || _vdpMode == VDP_MODE_TEXT80)
+      cr = 0x20;
+
+    do {
+
+      IO_VDPDATA = cr;
+
+      *start = 0x20;
+
+      start++;
+    } while (start != end);
+  }
+
+  void vdp_fillScreen(uint8_t c) {
+
+    vdp_setWriteAddress(_vdpPatternNameTableAddr);
+
+    uint8_t *start = _vdp_textBuffer;
+
+    uint8_t *end = start + (_vdpCursorMaxXFull * 24);
+
+    do {
+
+      IO_VDPDATA = c;
+
+      *start = c;
+
+      start++;
+    } while (start != end);
+  }
+
+  void vdp_clearRows(uint8_t topRow, uint8_t bottomRow) {
+    
+    uint16_t name_offset = topRow * _vdpCursorMaxXFull;
+
+    vdp_setWriteAddress(_vdpPatternNameTableAddr + name_offset);
+
+    uint8_t *start = _vdp_textBuffer + (topRow * _vdpCursorMaxXFull);
+    uint8_t *end   = _vdp_textBuffer + (bottomRow * _vdpCursorMaxXFull);
+
+    do {
+      
+      IO_VDPDATA = 0x20;
+
+      *start = 0x20;
+
+      start++;
+    } while (start != end);
+  }
+
+  void vdp_loadASCIIFont(uint8_t *font) {
+
+    vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 0x100);
+
+    uint8_t *start = font;
+    uint8_t *end = start + 768;
+
+    do {
+
+      IO_VDPDATA = *start;
+
+      start++;
+    } while (start != end);
+  }
+
+  void vdp_loadASCIIFontWithInverse(uint8_t *font) {
+
+    vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 0x100);
+
+    uint8_t *start = font;
+    uint8_t *end = start + 768;
+
+    do {
+
+      IO_VDPDATA = *start;
+
+      start++;
+    } while (start != end);
+
+    start = font;
+    do {
+
+      IO_VDPDATA = *start ^ 0xff;
+
+      start++;
+    } while (start != end);
+  }
+
+  void vdp_putPattern(uint8_t x, uint8_t y, uint8_t patternId) {
+
+    uint16_t name_offset = y * _vdpCursorMaxXFull + x;
+
+    vdp_setWriteAddress(_vdpPatternNameTableAddr + name_offset);
+    _vdp_textBuffer[name_offset] = patternId;
+    
+    IO_VDPDATA = patternId;
+  }
+
+  void vdp_loadPatternToId(uint8_t patternId, uint8_t *pattern) {
+
+    // datasheet 2-20 : screen is split into 3 and the pattern table therefore is repeated 3 times
+
+    uint8_t *start = pattern;
+    uint8_t *end = start + 8;
+
+    vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + ((uint16_t)patternId * 8));
+    do {
+
+      IO_VDPDATA = *start;
+
+      start++;
+    } while (start != end);
+
+    if (_vdpSplitThirds) { 
+
+      vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 2048 + ((uint16_t)patternId * 8));
+      start = pattern;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+
+      vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 4096 + ((uint16_t)patternId * 8));
+      start = pattern;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+    }
+  }
+
+  void vdp_loadPatternTable(uint8_t *patternTable, uint16_t len) {
+
+    // datasheet 2-20 : screen is split into 3 and the pattern table therefore is repeated 3 times
+
+    uint8_t *start = patternTable;
+    uint8_t *end = start + len;
+
+    vdp_setWriteAddress(_vdpPatternGeneratorTableAddr);
+    do {
+
+      IO_VDPDATA = *start;
+
+      start++;
+    } while (start != end);
+
+    if (_vdpSplitThirds) { 
+
+      vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 2048);
+      start = patternTable;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+
+      vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 4096);
+      start = patternTable;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+    }
+  }
+
+  void vdp_loadColorToId(uint8_t patternId,  uint8_t *color) {
+
+    // datasheet 2-20 : screen is split into 3 and the color table therefore is repeated 3 times
+    uint8_t *start = color;
+    uint8_t *end = start + 8;
+      
+    vdp_setWriteAddress(_vdpColorTableAddr + ((uint16_t)patternId * 8));
+    do {
+
+      IO_VDPDATA = *start;
+
+      start++;
+    } while (start != end);
+
+    if (_vdpSplitThirds) {
+
+      vdp_setWriteAddress(_vdpColorTableAddr + 2048 + ((uint16_t)patternId * 8));
+      start = color;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+
+      vdp_setWriteAddress(_vdpColorTableAddr + 4096 + ((uint16_t)patternId * 8));
+      start = color;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+    }
+  }
+
+  void vdp_loadColorTable(uint8_t *colorTable, uint16_t len) {
+
+    // datasheet 2-20 : screen is split into 3 and the color table therefore is repeated 3 times
+    uint8_t *start = colorTable;
+    uint8_t *end = colorTable + len;
+      
+    vdp_setWriteAddress(_vdpColorTableAddr);
+    do {
+
+      IO_VDPDATA = *start;
+
+      start++;
+    } while (start != end);
+
+    if (_vdpSplitThirds) {
+
+      vdp_setWriteAddress(_vdpColorTableAddr + 2048);
+      start = colorTable;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+
+      vdp_setWriteAddress(_vdpColorTableAddr + 4096);
+      start = colorTable;
+      do {
+
+        IO_VDPDATA = *start;
+
+        start++;
+      } while (start != end);
+    }
+  }
+
+  void vdp_colorizePattern(uint8_t patternId, uint8_t fg, uint8_t bg) {
+
+    uint16_t pt = patternId * 8;
+
+    uint8_t c = (fg << 4) + bg;
+
+    vdp_setWriteAddress(_vdpColorTableAddr + pt);
+    for (uint8_t i = 0; i < 8; i++)
+      IO_VDPDATA = c;
+
+    if (_vdpSplitThirds) {
+
+      vdp_setWriteAddress(_vdpColorTableAddr + 2048  + pt);
+      for (uint8_t i = 0; i < 8; i++)
+        IO_VDPDATA = c;
+
+      vdp_setWriteAddress(_vdpColorTableAddr + 4096 + pt);
+      for (uint8_t i = 0; i < 8; i++)
+        IO_VDPDATA = c;
+    }
+  }
+
+  void vdp_plotHires(uint8_t x, uint8_t y, uint8_t color1, uint8_t color2) {
+
+    uint16_t offset = 8 * (x / 8) + y % 8 + 256 * (y / 8);
+
+    vdp_setReadAddress(_vdpPatternGeneratorTableAddr + offset);
+    uint8_t pixel = IO_VDPDATA;
+
+    vdp_setReadAddress(_vdpColorTableAddr + offset);
+    uint8_t color = IO_VDPDATA;
+
+    if (color1 != NULL) {
+
+      pixel |= 0x80 >> (x % 8); // Set bit a "1"
+      color = (color & 0x0F) | (color1 << 4);
     } else {
 
-      color_ &= 0xF0;
-      color_ |= color & 0x0F;
+      pixel &= ~(0x80 >> (x % 8)); // Set bit as "0"
+      color = (color & 0xF0) | (color2 & 0x0F);
     }
 
-    vdp_setWriteAddress(_vdp_pattern_table + offset);
-    IO_VDPDATA = 0xF0;
+    vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + offset);
+    IO_VDPDATA = pixel;
 
-    vdp_setWriteAddress(_vdp_color_table + offset);
-    IO_VDPDATA = color_;
+    vdp_setWriteAddress(_vdpColorTableAddr + offset);
+    IO_VDPDATA = color;
   }
-}
 
-void vdp_setSpritePattern(uint8_t number, const uint8_t* sprite) {
+  void vdp_plotColor(uint8_t x, uint8_t y, uint8_t color) {
 
-  if (_vdp_sprite_size_sel) {
+    if (_vdpMode == VDP_MODE_MULTICOLOR) {
 
-    vdp_setWriteAddress(_vdp_sprite_pattern_table + 32 * number);
+      uint16_t addr = _vdpPatternGeneratorTableAddr + 8 * (x / 2) + y % 8 + 256 * (y / 8);
 
-    for (uint8_t i = 0; i < 32; i++) {
-      IO_VDPDATA = sprite[i];
+      vdp_setReadAddress(addr);
+      uint8_t dot = IO_VDPDATA;
+
+      vdp_setWriteAddress(addr);
+
+      if (x & 1) // Odd columns
+        IO_VDPDATA = (dot & 0xF0) + (color & 0x0f);
+      else
+        IO_VDPDATA = (dot & 0x0F) + (color << 4);
+    } else if (_vdpMode == VDP_MODE_G2) {
+
+      // Draw bitmap
+      uint16_t offset = 8 * (x / 2) + y % 8 + 256 * (y / 8);
+
+      vdp_setReadAddress(_vdpColorTableAddr + offset);
+      uint8_t color_ = IO_VDPDATA;
+
+      if ((x & 1) == 0) {
+
+        // Even 
+        color_ &= 0x0F;
+        color_ |= (color << 4);
+      } else {
+
+        color_ &= 0xF0;
+        color_ |= color & 0x0F;
+      }
+
+      vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + offset);
+      IO_VDPDATA = 0xF0;
+
+      vdp_setWriteAddress(_vdpColorTableAddr + offset);
+      IO_VDPDATA = color_;
     }
-  } else {
+  }
 
-    vdp_setWriteAddress(_vdp_sprite_pattern_table + 8 * number);
+  void vdp_disableSprite(uint8_t id) {
 
-    for (uint8_t i = 0; i < 8; i++) {
-      IO_VDPDATA = sprite[i];
+    uint16_t addr = _vdpSpriteAttributeTableAddr + 4 * id;
+
+    vdp_setWriteAddress(addr);
+    IO_VDPDATA = 192;        // y
+    IO_VDPDATA = 0;          // x
+    IO_VDPDATA = 0;          // pattern name #0 (should always be empty so no false collisions)
+    IO_VDPDATA = 0b10000000; // early clock to hide behind border
+  }
+
+  void vdp_loadSpritePatternNameTable(uint16_t numSprites, uint8_t *sprite) {
+
+    for (uint8_t i = 0; i < 32; i++)
+      vdp_disableSprite(i);
+
+    if (_vdpSpriteSizeSelected) {
+
+      vdp_setWriteAddress(_vdpSpriteGeneratorTableAddr);
+
+      uint16_t end = numSprites * 32;
+
+      for (uint16_t i = 0; i < end; i++) 
+        IO_VDPDATA = sprite[i];
+    } else {
+
+      vdp_setWriteAddress(_vdpSpriteGeneratorTableAddr);
+
+      uint16_t end = numSprites * 8;
+      
+      for (uint16_t i = 0; i < end; i++) 
+        IO_VDPDATA = sprite[i];
     }
   }
 
-}
+  uint8_t vdp_spriteInit(uint8_t id, uint8_t spritePatternNameId, uint8_t x, uint8_t y, uint8_t color) {
 
-void vdp_setSpriteColor(uint16_t addr, uint8_t color) {
+    uint16_t addr = _vdpSpriteAttributeTableAddr + 4 * id;
 
-  vdp_setReadAddress(addr + 3);
+    vdp_setWriteAddress(addr);
+    
+    IO_VDPDATA = y; // y
+    
+    IO_VDPDATA = x; // x
 
-  uint8_t ecclr = IO_VDPDATA & 0x80 | (color & 0x0F);
+    if (_vdpSpriteSizeSelected)
+      IO_VDPDATA = spritePatternNameId * 4; // 16x16 sprite location (name). big sprites take 4 8x8 blocks (datasheet 2-34)
+    else
+      IO_VDPDATA = spritePatternNameId;     // 8x8 sprite location (name
 
-  vdp_setWriteAddress(addr + 3);
+    // Set bit 7 to hide the sprite since we're not using it yet
+    IO_VDPDATA = color & 0x0f;
 
-  IO_VDPDATA = ecclr;
-}
-
-//Sprite_attributes vdp_sprite_get_attributes(uint16_t addr) {
-//
-//  Sprite_attributes attrs;
-//
-//  setReadAddress(addr);
-//
-//  attrs.y = IO_VDPDATA;
-//  attrs.x = IO_VDPDATA;
-//  attrs.name_ptr = IO_VDPDATA;
-//  attrs.ecclr = IO_VDPDATA;
-//
-//  return attrs;
-//}
-
-void vdp_getSpritePosition(uint16_t addr, uint16_t xpos, uint8_t ypos) {
-
-  vdp_setReadAddress(addr);
-
-  ypos = IO_VDPDATA;
-
-  uint8_t x = IO_VDPDATA;
-
-  uint8_t eccr = IO_VDPDATA;
-
-  if ((eccr & 0x80) != 0)
-    xpos = x;
-  else
-    xpos = x + 32;
-}
-
-uint16_t vdp_spriteInit(uint8_t name, uint8_t priority, uint8_t color) {
-
-  uint16_t addr = _vdp_sprite_attribute_table + 4 * priority;
-
-  vdp_setWriteAddress(addr);
-  IO_VDPDATA = 0;
-  IO_VDPDATA = 0;
-
-  if (_vdp_sprite_size_sel)
-    IO_VDPDATA = 4 * name;
-  else
-    IO_VDPDATA = 4 * name;
-
-  IO_VDPDATA = 0x80 | (color & 0xF);
-
-  return addr;
-}
-
-uint8_t vdp_setSpritePosition(uint16_t addr, uint16_t x, uint8_t y) {
-
-  uint8_t ec, xpos;
-
-  if (x < 144) {
-
-    ec = 1;
-    xpos = x;
-  } else {
-
-    ec = 0;
-    xpos = x - 32;
+    return id;
   }
 
-  vdp_setReadAddress(addr + 3);
-  uint8_t color = IO_VDPDATA & 0x0f;
+  void vdp_setSpriteColor(uint8_t id, uint8_t color) {
 
-  vdp_setWriteAddress(addr);
-  IO_VDPDATA = y;
-  IO_VDPDATA = xpos;
+    uint16_t addr = _vdpSpriteAttributeTableAddr + 4 * id;
 
-  vdp_setWriteAddress(addr + 3);
-  IO_VDPDATA = (ec << 7) | color;
+    vdp_setWriteAddress(addr + 3);
 
-  return IO_VDPLATCH;
-}
-
-void vdp_print(uint8_t* text) {
-
-  for (uint16_t i = 0; text[i] != 0x00; i++)
-    vdp_write(text[i], true);
-}
-
-void vdp_printG2(uint8_t* text) {
-
-  for (uint16_t i = 0; text[i] != 0x00; i++)
-    vdp_writeG2(text[i], true);
-}
-
-void vdp_printPart(uint8_t* text, uint16_t offset, uint16_t length) {
-
-  for (uint16_t i = 0; i < length; i++)
-    vdp_write(text[offset + i], true);
-}
-
-void vdp_newLine() {
-
-  if (vdp_cursor.y == 23) {
-
-    vdp_scrollTextUp(0, 23);
-
-    vdp_cursor.x = 0;
-  } else {
-
-    vdp_setCursor2(0, ++vdp_cursor.y);
-  }
-}
-
-void vdp_setBackDropColor(uint8_t color) {
-
-  vdp_setRegister(7, color);
-}
-
-void vdp_setPatternColor(uint16_t index, uint8_t fg, uint8_t bg) {
-
-  if (_vdp_mode == VDP_MODE_G1)
-    index &= 31;
-
-  vdp_setWriteAddress(_vdp_color_table + index);
-  IO_VDPDATA = (fg << 4) + bg;
-}
-
-void vdp_setCursor2(uint8_t col, uint8_t row) {
-
-  if (col == 255) {
-
-    col = _vdp_crsr_max_x;
-    row--;
-  } else if (col > _vdp_crsr_max_x) {
-
-    col = 0;
-    row++;
+    IO_VDPDATA = color & 0x0f;
   }
 
-  if (row == 255)
-    row = _vdp_crsr_max_y;
-  else if (row > _vdp_crsr_max_y)
-    row = 0;
+  void vdp_setSpritePosition(uint8_t id, uint8_t x, uint8_t y) {
 
-  vdp_cursor.x = col;
-  vdp_cursor.y = row;
-}
+    uint16_t addr = _vdpSpriteAttributeTableAddr + 4 * id;
 
-void vdp_setCursor(uint8_t direction) __z88dk_fastcall {
-
-  switch (direction) {
-  case VDP_CURSOR_UP:
-    vdp_setCursor2(vdp_cursor.x, vdp_cursor.y - 1);
-    break;
-  case VDP_CURSOR_DOWN:
-    vdp_setCursor2(vdp_cursor.x, vdp_cursor.y + 1);
-    break;
-  case VDP_CURSOR_LEFT:
-    vdp_setCursor2(vdp_cursor.x - 1, vdp_cursor.y);
-    break;
-  case VDP_CURSOR_RIGHT:
-    vdp_setCursor2(vdp_cursor.x + 1, vdp_cursor.y);
-    break;
+    vdp_setWriteAddress(addr);
+    IO_VDPDATA = y;
+    IO_VDPDATA = x;
   }
-}
 
-void vdp_setTextColor(uint8_t fg, uint8_t bg) {
+  void vdp_setSpritePositionAndColor(uint8_t id, uint8_t x, uint8_t y, uint8_t color) {
 
-  _vdp_fgcolor = fg;
+    uint16_t addr = _vdpSpriteAttributeTableAddr + 4 * id;
 
-  _vdp_bgcolor = bg;
+    vdp_setWriteAddress(addr);
+    IO_VDPDATA = y;
+    IO_VDPDATA = x;
+    IO_VDPDATA = id;
+    IO_VDPDATA = color & 0x0f;
+  }
 
-  if (_vdp_mode == VDP_MODE_TEXT)
+  void vdp_getSpritePosition(uint8_t id, uint8_t *xpos, uint8_t *ypos) {
+
+    uint16_t addr = _vdpSpriteAttributeTableAddr + 4 * id;
+
+    vdp_setReadAddress(addr);
+
+    *ypos = IO_VDPDATA;
+
+    *xpos = IO_VDPDATA;
+  }
+
+  void vdp_print(uint8_t *text) {
+
+    uint8_t *start = text;
+
+    while (*start != 0x00) {
+
+      vdp_write(*start);
+
+      start++;
+    }
+  }
+
+  void vdp_printJustified(uint8_t *text, uint8_t leftMargin, uint8_t rightMargin) {
+
+    while (*text != 0x00) { 
+
+      if (*text == ' ') {
+
+        text++;  
+
+        uint8_t *startOfNextWord = text;
+
+        // Find the length of the next word
+        while (*startOfNextWord != ' '  && 
+              *startOfNextWord != '.'  && 
+              *startOfNextWord != ','  &&
+              *startOfNextWord != '!'  &&
+              *startOfNextWord != 0x00) 
+          startOfNextWord++;
+        
+        // Calculate the length of the next word
+        uint8_t nextWordLength = startOfNextWord - text;
+
+        // Check if the next word exceeds the screen width
+        if (vdp_cursor.x + nextWordLength >= rightMargin) {
+
+          vdp_newLine();
+          vdp_cursor.x = leftMargin;
+
+        } else if (vdp_cursor.x != leftMargin) {
+
+          vdp_write(' ');
+        }
+      }
+
+      if (vdp_cursor.x >= rightMargin) {
+
+        vdp_newLine();
+        vdp_cursor.x = leftMargin;
+      }
+
+      vdp_write(*text);
+
+      text++; 
+    }
+  }
+
+  void vdp_printColorized(uint8_t *text, uint8_t fgColor, uint8_t bgColor) {
+
+    uint8_t *start = text;
+
+    while (*start != 0x00) {
+
+      vdp_colorizePattern(*start, fgColor, bgColor);
+
+      vdp_write(*start);
+
+      start++;
+    }
+  }
+
+  void vdp_printPart(uint16_t offset, uint16_t textLength, uint8_t *text) {
+
+    uint8_t *start = text + offset;
+    uint8_t *end   = start + textLength;
+
+    while (start != end) {
+
+      vdp_write(*start);
+
+      start++;
+    }
+  }
+
+  void vdp_newLine() {
+
+    if (vdp_cursor.y == _autoScrollBottomRow) {
+
+      if (_autoScroll)
+        vdp_scrollTextUp(_autoScrollTopRow, _autoScrollBottomRow);
+
+      vdp_cursor.x = 0;
+    } else {
+
+      vdp_setCursor2(0, ++vdp_cursor.y);
+    }
+  }
+
+  void vdp_setBackDropColor(uint8_t color) {
+
+    vdp_setRegister(7, color);
+  }
+
+  void vdp_setCursor2(uint8_t col, uint8_t row) {
+
+    if (col > _vdpCursorMaxX) {
+
+      col = 0;
+      row++;
+    }
+
+    if (row > _vdpCursorMaxY)
+      row = _vdpCursorMaxY;
+
+    vdp_cursor.x = col;
+    vdp_cursor.y = row;
+  }
+
+  void vdp_setCursor(uint8_t direction) {
+
+    switch (direction) {
+      case VDP_CURSOR_UP:
+        vdp_setCursor2(vdp_cursor.x, vdp_cursor.y - 1);
+        break;
+      case VDP_CURSOR_DOWN:
+        vdp_setCursor2(vdp_cursor.x, vdp_cursor.y + 1);
+        break;
+      case VDP_CURSOR_LEFT:
+        vdp_setCursor2(vdp_cursor.x - 1, vdp_cursor.y);
+        break;
+      case VDP_CURSOR_RIGHT:
+        vdp_setCursor2(vdp_cursor.x + 1, vdp_cursor.y);
+        break;
+    }
+  }
+
+  void vdp_setTextColor(uint8_t fg, uint8_t bg) {
+
     vdp_setRegister(7, (fg << 4) + bg);
-}
-
-void vdp_write(uint8_t chr, bool advanceNextChar) {
-
-  // Position in name table
-  uint16_t name_offset = vdp_cursor.y * (_vdp_crsr_max_x + 1) + vdp_cursor.x;
-
-  // Offset of pattern in pattern table
-  uint16_t pattern_offset = name_offset << 3;
-
-  vdp_setWriteAddress(_vdp_name_table + name_offset);
-
-  IO_VDPDATA = chr;
-
-  _vdp_textBuffer[vdp_cursor.y * (_vdp_crsr_max_x + 1) + vdp_cursor.x] = chr;
-
-  if (vdp_cursor.x == 39 && vdp_cursor.y == 23) {
-
-    vdp_scrollTextUp(0, 23);
-
-    vdp_cursor.x = 0;
-  } else if (advanceNextChar) {
-
-    vdp_setCursor(VDP_CURSOR_RIGHT);
   }
-}
 
-void vdp_writeG2(uint8_t chr, bool advanceNextChar) {
+  void vdp_write(uint8_t chr) {
 
-  if (chr < 0x20 || chr > 0x7d)
-    return;
+    uint16_t name_offset = vdp_cursor.y * _vdpCursorMaxXFull + vdp_cursor.x;
 
-  uint16_t name_offset = vdp_cursor.y * (_vdp_crsr_max_x + 1) + vdp_cursor.x; // Position in name table
-  uint16_t pattern_offset = name_offset << 3;                    // Offset of pattern in pattern table
+    vdp_setWriteAddress(_vdpPatternNameTableAddr + name_offset);
 
-  vdp_setWriteAddress(_vdp_pattern_table + pattern_offset);
+    IO_VDPDATA = chr;
 
-  for (uint8_t i = 0; i < 8; i++)
-    IO_VDPDATA = ASCII[((chr - 32) << 3) + i];
+    _vdp_textBuffer[name_offset] = chr;
 
-  if (advanceNextChar)
-    vdp_setCursor(VDP_CURSOR_RIGHT);
-}
+    if (_autoScroll && vdp_cursor.x == _vdpCursorMaxX && vdp_cursor.y == _autoScrollBottomRow) {
 
-void vdp_writeCharAtLocation(uint8_t x, uint8_t y, uint8_t c) {
+      vdp_scrollTextUp(_autoScrollTopRow, _autoScrollBottomRow);
 
-  uint16_t name_offset = y * (_vdp_crsr_max_x + 1) + x; // Position in name table
-
-  _vdp_textBuffer[y * (_vdp_crsr_max_x + 1) + x] = c;
-
-  vdp_setWriteAddress(_vdp_name_table + name_offset);
-
-  IO_VDPDATA = c;
-}
-
-uint8_t vdp_getCharAtLocationVRAM(uint8_t x, uint8_t y) {
-
-  uint16_t name_offset = y * (_vdp_crsr_max_x + 1) + x; // Position in name table
-
-  vdp_setReadAddress(_vdp_name_table + name_offset);
-
-  return IO_VDPDATA;
-}
-
-inline uint8_t vdp_getCharAtLocationBuf(uint8_t x, uint8_t y) {
-
-  return _vdp_textBuffer[y * (_vdp_crsr_max_x + 1) + x];
-}
-
-inline void vdp_setCharAtLocationBuf(uint8_t x, uint8_t y, uint8_t c) {
-
-  _vdp_textBuffer[y * (_vdp_crsr_max_x + 1) + x] = c;
-}
-
-void vdp_scrollTextUp(uint8_t topRow, uint8_t bottomRow) {
-
-  uint16_t name_offset = topRow * (_vdp_crsr_max_x + 1);
-
-  vdp_setWriteAddress(_vdp_name_table + name_offset);
-
-  for (uint8_t y = topRow; y < bottomRow; y++)
-    for (uint8_t x = 0; x < 40; x++) {
-
-      _vdp_textBuffer[name_offset] = _vdp_textBuffer[name_offset + _vdp_crsr_max_x + 1];
-
-      IO_VDPDATA = _vdp_textBuffer[name_offset];
-
-      name_offset++;
+      vdp_cursor.x = 0;
     }
 
-  if (bottomRow <= _vdp_crsr_max_y)
-    for (uint8_t x = 0; x < 40; x++) {
+    vdp_setCursor2(vdp_cursor.x + 1, vdp_cursor.y);
+  }
 
-      _vdp_textBuffer[name_offset] = 0x20;
+  void vdp_writeCharAtLocation(uint8_t x, uint8_t y, uint8_t c) {
 
+    uint16_t name_offset = y * _vdpCursorMaxXFull + x; 
+
+    _vdp_textBuffer[name_offset] = c;
+      
+    vdp_setWriteAddress(_vdpPatternNameTableAddr + name_offset);
+
+    IO_VDPDATA = c;
+  }
+
+  uint8_t vdp_getCharAtLocationVRAM(uint8_t x, uint8_t y) {
+
+    uint16_t name_offset = y * _vdpCursorMaxXFull + x; 
+
+    vdp_setReadAddress(_vdpPatternNameTableAddr + name_offset);
+
+    return IO_VDPDATA;
+  }
+
+  uint8_t vdp_getCharAtLocationBuf(uint8_t x, uint8_t y) {
+
+    return _vdp_textBuffer[y * _vdpCursorMaxXFull + x];
+  }
+
+  void vdp_setCharAtLocationBuf(uint8_t x, uint8_t y, uint8_t c) {
+
+    _vdp_textBuffer[y * _vdpCursorMaxXFull + x] = c;
+  }
+
+  void vdp_refreshViewPort() {
+
+    vdp_setWriteAddress(_vdpPatternNameTableAddr);
+
+    __asm
+
+      push hl;
+      push de;
+
+      ld hl, __vdp_textBuffer;
+      ld de, (__vdpTextBufferSize); 
+
+      vdp_refreshViewPortLoop3:
+
+        ld a, (hl);
+        out (0xa0), a;
+
+        inc hl;
+        dec de;
+
+        ld A, D;                 
+        or E;                   
+        jp nz, vdp_refreshViewPortLoop3;
+
+      pop de;
+      pop hl;
+    __endasm;
+  }
+
+  void vdp_scrollTextUp(uint8_t topRow, uint8_t bottomRow) {
+
+    vdp_setWriteAddress(_vdpPatternNameTableAddr + (topRow * _vdpCursorMaxXFull));
+
+    uint8_t *to   = _vdp_textBuffer + (topRow * _vdpCursorMaxXFull);
+    uint8_t *from = to + _vdpCursorMaxXFull;
+    uint8_t *end  = _vdp_textBuffer + ((bottomRow + 1) * _vdpCursorMaxXFull);
+
+    do {
+
+      *to = *from;
+
+      IO_VDPDATA = *to;
+
+      to++;
+      from++;
+    } while (from != end);
+    
+    do {
+
+      *to = 0x20;
       IO_VDPDATA = 0x20;
 
-      name_offset++;
-    }
-}
+      to++;
+    } while (to != end);
+  }
 
-void vdp_clearRows(uint8_t topRow, uint8_t bottomRow) {
+  void vdp_scrollTextDown(uint8_t topRow, uint8_t bottomRow) {
 
-  uint16_t name_offset = topRow * (_vdp_crsr_max_x + 1);
+    uint8_t *fromPtr = _vdp_textBuffer + (bottomRow * _vdpCursorMaxXFull) - 1;
+    uint8_t *toPtr   = fromPtr + _vdpCursorMaxXFull;
+    uint8_t *endPtr  = (_vdp_textBuffer - 1) + (topRow * _vdpCursorMaxXFull);
 
-  vdp_setWriteAddress(_vdp_name_table + name_offset);
+    do {
 
-  for (uint8_t y = topRow; y < bottomRow; y++)
-    for (uint8_t x = 0; x < 40; x++) {
+      *toPtr = *fromPtr;
 
-      _vdp_textBuffer[name_offset] = 0x20;
+      toPtr--;
+      fromPtr--;
+    } while (fromPtr != endPtr);
+        
+    do {
 
-      IO_VDPDATA = 0x20;
+      *toPtr = 0x20;
 
-      name_offset++;
-    }
-}
+      toPtr--;
+    } while (toPtr != endPtr);
 
-void vdp_writeUInt32(uint32_t v) __z88dk_fastcall {
+    vdp_setWriteAddress(_vdpPatternNameTableAddr + (topRow * _vdpCursorMaxXFull));
+    uint8_t *v = _vdp_textBuffer + (topRow * _vdpCursorMaxXFull);
+    uint8_t *e = _vdp_textBuffer + ((bottomRow + 1) * _vdpCursorMaxXFull);
 
-  // 4294967295
-  uint8_t tb[11];
+    do {
 
-  itoa(v, tb, 10);
+      IO_VDPDATA = *v;
 
-  vdp_print(tb);
-}
+      v++;
+    } while (v != e);
+  }
 
-void vdp_writeInt32(int32_t v) __z88dk_fastcall {
+  void vdp_writeUInt8ToBinary(uint8_t v) {
 
-  // -2147483648
-  uint8_t tb[12];
+    uint8_t str[9];
 
-  itoa(v, tb, 10);
+    for (uint8_t i = 0; i < 8; i++)
+      if (v >> i & 1)
+        str[7 - i] = '1';
+      else
+        str[7 - i] = '0';
 
-  vdp_print(tb);
-}
+    str[8] = 0x00;
 
-void vdp_writeUInt16(uint16_t v) __z88dk_fastcall {
+    vdp_print(str);
+  }
 
-  uint8_t tb[6];
+  void vdp_writeUInt16ToBinary(uint16_t v) {
 
-  itoa(v, tb, 10);
+    uint8_t str[17];
 
-  vdp_print(tb);
-}
+    for (uint8_t i = 0; i < 16; i++)
+      if (v >> i & 1)
+        str[15 - i] = '1';
+      else
+        str[15 - i] = '0';
 
-void vdp_writeInt16(int16_t v) __z88dk_fastcall {
+    str[16] = 0x00;
 
-  uint8_t tb[7];
+    vdp_print(str);
+  }
 
-  itoa(v, tb, 10);
+  void vdp_writeUInt32ToBinary(uint32_t v) {
 
-  vdp_print(tb);
-}
+    uint8_t str[33];
 
-void vdp_writeUInt8(uint8_t v) __z88dk_fastcall {
+    for (uint8_t i = 0; i < 32; i++)
+      if (v >> i & 1)
+        str[31 - i] = '1';
+      else
+        str[31 - i] = '0';
 
-  uint8_t tb[4];
+    str[32] = 0x00;
 
-  itoa(v, tb, 10);
-
-  vdp_print(tb);
-}
-
-void vdp_writeInt8(int8_t v) __z88dk_fastcall {
-
-  uint8_t tb[5];
-
-  itoa(v, tb, 10);
-
-  vdp_print(tb);
-}
-
-void vdp_writeUInt8ToBinary(uint8_t v) __z88dk_fastcall {
-
-  uint8_t str[9];
-
-  for (uint8_t i = 0; i < 8; i++)
-    if (v >> i & 1)
-      str[7 - i] = '1';
-    else
-      str[7 - i] = '0';
-
-  str[8] = 0x00;
-
-  vdp_print(str);
-}
-
-void vdp_writeUInt16ToBinary(uint16_t v) __z88dk_fastcall {
-
-  uint8_t str[17];
-
-  for (uint8_t i = 0; i < 16; i++)
-    if (v >> i & 1)
-      str[15 - i] = '1';
-    else
-      str[15 - i] = '0';
-
-  str[16] = 0x00;
-
-  vdp_print(str);
-}
-
-int vdp_initTextMode(uint8_t fgcolor, uint8_t bgcolor, bool autoScroll) {
-
-  return vdp_init(VDP_MODE_TEXT, (fgcolor << 4) | (bgcolor & 0x0f), 0, 0, autoScroll);
-}
-
-int vdp_initG1Mode(uint8_t fgcolor, uint8_t bgcolor) {
-
-  return vdp_init(VDP_MODE_G1, (fgcolor << 4) | (bgcolor & 0x0f), 0, 0, false);
-}
-
-int vdp_initG2Mode(bool big_sprites, bool scale_sprites) {
-
-  return vdp_init(VDP_MODE_G2, 0x0, big_sprites, scale_sprites, false);
-}
-
-int vdp_initMultiColorMode() {
-
-  return vdp_init(VDP_MODE_MULTICOLOR, 0, 0, 0, false);
-}
+    vdp_print(str);
+  }
+#endif
